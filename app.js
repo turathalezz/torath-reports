@@ -198,19 +198,25 @@
   async function pageLogin() {
     setTab('');
     show(h('div', { class: 'loading' }, 'جاري التحميل…'));
-    let names;
-    try { names = (await api('employees')).names; } catch (e) { return show(errorBox(e)); }
+    let names, pinNames;
+    try { const r = await api('employees'); names = r.names; pinNames = r.pinNames || names; } catch (e) { return show(errorBox(e)); }
+    const needPin = n => pinNames.indexOf(n) >= 0;   // المالك والمدير بس يحتاجون رمز
     let picked = store.get('lastName') || '';
+    if (names.indexOf(picked) < 0) picked = '';
     const pin = h('input', { class: 'in pin', type: 'password', inputmode: 'numeric', autocomplete: 'current-password', maxlength: 8, placeholder: '••••' });
+    const pinBox = h('div', null, h('label', { class: 'small muted' }, 'رمز الدخول'), pin);
     const err = h('div', { class: 'err' });
     const btn = h('button', { class: 'btn block', type: 'submit' }, 'دخول');
     const grid = h('div', { class: 'names' });
-    const draw = () => fill(grid, ...names.map(n => h('button', { type: 'button', class: n === picked ? 'on' : '', onclick: () => { picked = n; draw(); pin.focus(); } }, n)));
+    const draw = () => {
+      pinBox.hidden = !picked || !needPin(picked);
+      fill(grid, ...names.map(n => h('button', { type: 'button', class: n === picked ? 'on' : '', onclick: () => { picked = n; draw(); if (needPin(n)) pin.focus(); } }, n)));
+    };
     draw();
     const submit = async e => {
       e.preventDefault(); err.textContent = '';
       if (!picked) { err.textContent = 'اختر اسمك أول'; return; }
-      if (!pin.value) { err.textContent = 'اكتب رمز الدخول'; pin.focus(); return; }
+      if (needPin(picked) && !pin.value) { err.textContent = 'اكتب رمز الدخول'; pin.focus(); return; }
       btn.disabled = true; btn.textContent = 'جاري الدخول…';
       try {
         const r = await api('login', { name: picked, pin: pin.value });
@@ -220,8 +226,8 @@
       } catch (ex) { err.textContent = ex.message; pin.value = ''; btn.disabled = false; btn.textContent = 'دخول'; }
     };
     show(h('form', { class: 'login card', onsubmit: submit },
-      h('h1', null, 'أهلًا 👋'), h('p', { class: 'muted' }, 'اختر اسمك واكتب رمز الدخول.'),
-      grid, h('label', { class: 'small muted' }, 'رمز الدخول'), pin, err, btn));
+      h('h1', null, 'أهلًا 👋'), h('p', { class: 'muted' }, 'اختر اسمك واضغط دخول.'),
+      grid, pinBox, err, btn));
   }
 
   function errorBox(e, retry) {
