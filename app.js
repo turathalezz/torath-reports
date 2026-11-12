@@ -124,16 +124,24 @@
     }
     return res.data;
   }
+  // النماذج محفوظة في الجهاز: الصفحة تفتح فورًا، وتتحدث من السيرفر بالخلفية
+  function keepMeta(m) { S.meta = m; S.user = m.user; store.set('user', S.user); store.set('meta', m); return m; }
   async function getMeta(force) {
     if (S.meta && !force) return S.meta;
-    S.meta = await api('meta', force ? { refresh: true } : null);
-    S.user = S.meta.user; store.set('user', S.user);
-    return S.meta;
+    if (!force) {
+      const saved = store.get('meta');
+      if (saved && saved.forms && saved.user && S.user && saved.user.name === S.user.name) {
+        S.meta = saved;
+        api('meta').then(keepMeta).catch(() => { /* تبقى النسخة المحفوظة */ });
+        return S.meta;
+      }
+    }
+    return keepMeta(await api('meta', force ? { refresh: true } : null));
   }
   const isOwner = () => S.user && S.user.role === 'owner';
   function logout(silent) {
     S.token = null; S.user = null; S.meta = null;
-    store.del('token'); store.del('user');
+    store.del('token'); store.del('user'); store.del('meta');
     if (!silent) go('#/login'); else location.hash = '#/login';
   }
   const formBySheet = sheet => S.meta.forms.find(f => f.sheet === sheet);
@@ -198,8 +206,17 @@
   async function pageLogin() {
     setTab('');
     show(h('div', { class: 'loading' }, 'جاري التحميل…'));
-    let names, pinNames;
-    try { const r = await api('employees'); names = r.names; pinNames = r.pinNames || names; } catch (e) { return show(errorBox(e)); }
+    let names, pinNames, draw = null;
+    const useList = r => { names = r.names; pinNames = r.pinNames || r.names; };
+    // قائمة الأسماء من الجهاز فورًا، وتتحدث بالخلفية
+    const saved = store.get('employees');
+    const fresh = api('employees').then(r => { store.set('employees', r); return r; });
+    if (saved && saved.names) {
+      useList(saved);
+      fresh.then(r => { if (JSON.stringify(r) !== JSON.stringify(saved)) { useList(r); if (draw) draw(); } }).catch(() => { /* */ });
+    } else {
+      try { useList(await fresh); } catch (e) { return show(errorBox(e)); }
+    }
     const needPin = n => pinNames.indexOf(n) >= 0;   // المالك والمدير بس يحتاجون رمز
     let picked = store.get('lastName') || '';
     if (names.indexOf(picked) < 0) picked = '';
@@ -208,7 +225,8 @@
     const err = h('div', { class: 'err' });
     const btn = h('button', { class: 'btn block', type: 'submit' }, 'دخول');
     const grid = h('div', { class: 'names' });
-    const draw = () => {
+    draw = () => {
+      if (names.indexOf(picked) < 0) picked = '';
       pinBox.hidden = !picked || !needPin(picked);
       fill(grid, ...names.map(n => h('button', { type: 'button', class: n === picked ? 'on' : '', onclick: () => { picked = n; draw(); if (needPin(n)) pin.focus(); } }, n)));
     };
@@ -603,7 +621,7 @@
     show(h('div', { class: 'head' }, h('div', null, h('h1', null, 'لوحة المالك'), h('p', null, 'كل الإدارات في صفحة وحدة'))),
       h('div', { class: 'row no-print', style: 'margin-bottom:10px' },
         h('a', { class: 'btn light sm', href: '#/reports' }, 'جدول وتصدير'),
-        h('button', { class: 'btn ghost sm', onclick: async () => { await getMeta(true); toast('تحدّثت النماذج من الشيت'); } }, 'تحديث النماذج من الشيت')),
+        h('button', { class: 'btn ghost sm', onclick: async () => { await getMeta(true); toast('تحدّثت النماذج والتقارير من الشيت'); } }, 'تحديث من الشيت')),
       pp.el, body);
     load(pp.range());
   }
