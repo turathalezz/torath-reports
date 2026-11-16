@@ -141,7 +141,7 @@
   const isOwner = () => S.user && S.user.role === 'owner';
   function logout(silent) {
     S.token = null; S.user = null; S.meta = null;
-    store.del('token'); store.del('user'); store.del('meta');
+    store.del('token'); store.del('user'); store.del('meta'); dashCacheClear();
     if (!silent) go('#/login'); else location.hash = '#/login';
   }
   const formBySheet = sheet => S.meta.forms.find(f => f.sheet === sheet);
@@ -273,10 +273,11 @@
       h('a', { class: 'tile note', href: '#/note' }, h('b', null, 'ملاحظة أو شكوى'), h('span', null, 'سجل الملاحظات والشكاوى')),
       h('a', { class: 'tile', href: '#/new' }, h('b', null, 'كل النماذج'), h('span', null, m.forms.length + ' نموذج')),
       h('a', { class: 'tile', href: '#/mine' }, h('b', null, isOwner() ? 'كل التقارير' : 'تقاريري'), h('span', null, 'عرض وتعديل')),
-      h('a', { class: 'tile', href: '#/dash' }, h('b', null, 'لوحة الإدارة'), h('span', null, 'المؤشرات')),
+      h('a', { class: 'tile', href: '#/dash' }, h('b', null, 'اللوحات'), h('span', null, isOwner() ? 'الإدارات والملاحظات' : 'المؤشرات والردود')),
       isOwner() ? h('a', { class: 'tile hl', href: '#/owner' }, h('b', null, 'لوحة المالك'), h('span', null, 'كل الإدارات')) : null,
       isOwner() ? h('a', { class: 'tile', href: '#/reports' }, h('b', null, 'جدول وتصدير'), h('span', null, 'Excel وطباعة')) : null));
     show(parts);
+    setTimeout(prefetchDash, 1200);   // تجهيز اللوحة بالخلفية عشان تفتح فورًا
   }
 
   /* ---------- اختيار النموذج ---------- */
@@ -548,27 +549,266 @@
       : h('p', { class: 'muted small' }, 'ما فيه ردود في هذي الفترة')));
     return out;
   }
+  /* ---------- اللوحات التفاعلية ---------- */
+  const NOTE_STATUS = ['بانتظار متابعة', 'تمت المتابعة', 'مغلقة'];
+  const AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+  const numOf = v => {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    const s = String(v == null ? '' : v).trim().replace(/[٠-٩]/g, d => AR_DIGITS.indexOf(d)).replace(/,/g, '');
+    if (s === '' || !/^-?\d+(\.\d+)?$/.test(s)) return null;
+    return Number(s);
+  };
+  const splitMulti = v => String(v).split(/[،,]\s*/).map(x => x.trim()).filter(Boolean);
+  const countBy = (arr, f) => {
+    const m = new Map();
+    arr.forEach(x => [].concat(f(x)).forEach(k => { k = k == null ? '' : String(k).trim(); if (k) m.set(k, (m.get(k) || 0) + 1); }));
+    return [...m].sort((a, b) => b[1] - a[1]);
+  };
+  const svgEl = (tag, a) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in a) e.setAttribute(k, a[k]); return e; };
+
+  // أشرطة توزيع قابلة للضغط: الضغط على شريط يفلتر، والضغط مرة ثانية يلغي
+  function bars(items, total, onPick, picked, max) {
+    max = max || 8;
+    const top = items.slice(0, max), rest = items.length - top.length;
+    const big = Math.max(1, ...top.map(x => x[1]));
+    return h('div', { class: 'bars' }, top.map(([k, c]) => h('button', {
+      type: 'button', class: 'bar' + (picked === k ? ' on' : '') + (onPick ? '' : ' static'),
+      onclick: onPick ? () => onPick(picked === k ? null : k) : null
+    }, h('span', { class: 'bl' }, k), h('span', { class: 'bt' }, h('i', { style: 'width:' + Math.max(4, c / big * 100) + '%' })),
+      h('span', { class: 'bc' }, c + (total ? ' · ' + Math.round(c / total * 100) + '%' : '')))),
+    rest > 0 ? h('div', { class: 'small muted' }, '+ ' + rest + ' غيرها') : null);
+  }
+
+  // أعمدة يومية (أو شهرية للفترات الطويلة)
+  function dayBars(from, to, map, unitFmt) {
+    const days = [];
+    for (let d = parseStamp(from); d && dayKey(d) <= to && days.length < 400; d = addDays(d, 1)) days.push(dayKey(d));
+    let keys = days, val = k => map.get(k) || 0, lab = k => k.slice(8) + '/' + k.slice(5, 7);
+    if (days.length > 62) {
+      keys = [...new Set(days.map(k => k.slice(0, 7)))];
+      val = k => days.filter(x => x.startsWith(k)).reduce((s, x) => s + (map.get(x) || 0), 0);
+      lab = k => k.slice(5) + '/' + k.slice(2, 4);
+    }
+    if (keys.length < 2) return null;
+    const W = 640, H = 128, P = { l: 4, r: 4, t: 14, b: 20 }, bw = (W - P.l - P.r) / keys.length, max = Math.max(1, ...keys.map(val));
+    const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', class: 'daybars', role: 'img' });
+    const every = Math.ceil(keys.length / 10);
+    keys.forEach((k, i) => {
+      const v = val(k), x = W - P.r - (i + 1) * bw, hh = (H - P.t - P.b) * v / max;
+      const r = svgEl('rect', { x: x + bw * 0.15, y: H - P.b - hh, width: bw * 0.7, height: Math.max(hh, v ? 2 : 0), rx: 2, fill: v ? '#6B4423' : '#E6DCCB' });
+      const tt = svgEl('title', {}); tt.textContent = k + ': ' + (unitFmt ? unitFmt(v) : v); r.appendChild(tt); svg.appendChild(r);
+      if (v && keys.length <= 16) { const t = svgEl('text', { x: x + bw / 2, y: H - P.b - hh - 3, 'font-size': 10.5, fill: '#4A2E17', 'text-anchor': 'middle' }); t.textContent = NF.format(Math.round(v * 10) / 10); svg.appendChild(t); }
+      if (i % every === 0) { const t = svgEl('text', { x: x + bw / 2, y: H - 5, 'font-size': 10, fill: '#7A6B5A', 'text-anchor': 'middle' }); t.textContent = lab(k); svg.appendChild(t); }
+    });
+    return svg;
+  }
+
+  // كاش اللوحات في الجهاز: تطلع فورًا ثم تتحدث
+  const DASH_KEYS = 'dashKeys';
+  const dashKey = (dept, r) => dept + '|' + r.from + '|' + r.to;
+  function dashCacheGet(k) { return store.get('d_' + k); }
+  function dashCacheSet(k, v) {
+    const ks = (store.get(DASH_KEYS) || []).filter(x => x !== k); ks.unshift(k);
+    ks.slice(8).forEach(x => store.del('d_' + x));
+    store.set(DASH_KEYS, ks.slice(0, 8)); store.set('d_' + k, { at: Date.now(), d: v });
+  }
+  function dashCacheClear() { (store.get(DASH_KEYS) || []).forEach(x => store.del('d_' + x)); store.del(DASH_KEYS); }
+  function prefetchDash() {
+    if (!S.meta) return;
+    const notesDept = S.meta.notes.dept;
+    const depts = (isOwner() ? [notesDept] : []).concat(S.meta.depts.filter(d => d !== notesDept));
+    let dept = store.get('dashDept') || S.user.depts[0] || depts[0];
+    if (depts.indexOf(dept) < 0) dept = depts[0];
+    const r = periodRange(store.get('period_dash') || { key: 'أسبوع' });
+    const k = dashKey(dept, r), c = dashCacheGet(k);
+    if (c && Date.now() - c.at < 180000) return;
+    api('dash', { dept, from: r.from, to: r.to }).then(d => dashCacheSet(k, d)).catch(() => { /* */ });
+  }
+
   async function pageDash(dept) {
     setTab('dash');
     const m = await getMeta();
-    const depts = m.depts.filter(d => d !== m.notes.dept);
+    const notesDept = m.notes.dept;
+    const depts = (isOwner() ? [notesDept] : []).concat(m.depts.filter(d => d !== notesDept));
     dept = dept || store.get('dashDept') || S.user.depts[0] || depts[0];
     if (depts.indexOf(dept) < 0) dept = depts[0];
     store.set('dashDept', dept);
     const body = h('div', null, h('div', { class: 'loading' }, 'جاري التحميل…'));
+    const live = h('span', { class: 'live' });
+    const state = {};   // الفلاتر تبقى لين تطلع من الصفحة
     let seq = 0;
+    const draw = (d, key) => (dept === notesDept ? renderNotes : renderDeptI)(body, d, state, key);
     const load = async r => {
-      const my = ++seq;
-      fill(body, h('div', { class: 'loading' }, 'جاري الحساب…'));
-      try { const d = await api('dash', { dept, from: r.from, to: r.to }); if (my === seq) fill(body, h('p', { class: 'small muted' }, 'من ' + d.from + ' إلى ' + d.to), ...deptBody(d)); }
-      catch (e) { if (my === seq) fill(body, errorBox(e)); }
+      const my = ++seq, key = dashKey(dept, r), c = dashCacheGet(key);
+      if (c) draw(c.d, key); else fill(body, h('div', { class: 'loading' }, 'جاري الحساب…'));
+      live.textContent = 'يتحدث…'; live.className = 'live on';
+      try {
+        const d = await api('dash', { dept, from: r.from, to: r.to });
+        if (my !== seq) return;
+        dashCacheSet(key, d);
+        if (!c || JSON.stringify(c.d) !== JSON.stringify(d)) draw(d, key);
+        live.textContent = 'محدّث'; live.className = 'live';
+      } catch (e) {
+        if (my !== seq) return;
+        if (c) { live.textContent = 'ما قدرت أحدّث، هذي آخر نسخة'; live.className = 'live bad'; } else fill(body, errorBox(e));
+      }
     };
     const pp = periodPicker('dash', load);
-    show(h('div', { class: 'head' }, h('div', null, h('h1', null, 'لوحة الإدارة'))),
-      h('div', { class: 'deptbar' }, depts.map(d => h('a', { class: d === dept ? 'on' : '', href: '#/dash/' + enc(d) }, d.replace('إدارة ', '')))),
+    show(h('div', { class: 'head' }, h('div', null, h('h1', null, 'اللوحات'), h('p', null, 'اضغط أي شريط أو اسم عشان تفلتر')), live),
+      h('div', { class: 'deptbar' }, depts.map(d => h('a', { class: (d === dept ? 'on' : '') + (d === notesDept ? ' notes' : ''), href: '#/dash/' + enc(d) },
+        d === notesDept ? 'الملاحظات والشكاوى' : d.replace('إدارة ', '')))),
       isOwner() ? h('a', { class: 'btn light sm', href: '#/owner', style: 'margin-bottom:10px' }, 'لوحة المالك ←') : null,
       pp.el, body);
     load(pp.range());
+  }
+
+  // صف قابل للفتح: يعرض كل الإجابات في مكانه بدون ما تفتح التقرير
+  function answerRow(title, sub, kv, href, extra) {
+    return h('details', { class: 'ans' },
+      h('summary', null, h('span', { class: 'grow' }, h('b', null, title), h('small', null, sub))),
+      h('div', { class: 'kv' }, kv.filter(([, v]) => !isEmpty(v)).map(([k, v]) => [h('div', null, k), h('div', null, String(v))])),
+      h('div', { class: 'row', style: 'margin-top:8px' }, extra, h('a', { class: 'btn ghost sm', href }, 'فتح التقرير')));
+  }
+  function moreList(items, n) {
+    const box = h('div', { class: 'list' });
+    let shown = n;
+    const draw = () => fill(box, items.slice(0, shown), items.length > shown
+      ? h('button', { class: 'btn ghost sm', onclick: () => { shown += n; draw(); } }, 'عرض المزيد (' + (items.length - shown) + ')') : null);
+    draw();
+    return box;
+  }
+  const ago = date => { const t = parseStamp(date); if (!t) return ''; const dd = Math.floor((Date.now() - t) / 86400000); return dd <= 0 ? 'اليوم' : dd === 1 ? 'أمس' : 'من ' + dd + ' يوم'; };
+
+  function renderDeptI(body, d, st) {
+    const detail = (d.detail || []).filter(f => f.total);
+    const rowsAll = detail.flatMap(f => f.rows.map(r => Object.assign({ f }, r)));
+    const emps = countBy(rowsAll, r => r.emp || 'بدون اسم');
+    const pass = (f, r) => (!st.emp || (r.emp || 'بدون اسم') === st.emp) && (!st.pick || st.pick.sheet !== f.sheet ||
+      (r.v[st.pick.i] != null && splitMulti(r.v[st.pick.i]).concat([String(r.v[st.pick.i]).trim()]).indexOf(st.pick.val) >= 0));
+    const redraw = () => renderDeptI(body, d, st);
+    const forms = detail.filter(f => !st.form || f.sheet === st.form);
+
+    const summaries = forms.map((f, fi) => {
+      const rows = f.rows.filter(r => pass(f, r));
+      const qs = f.cols.map((c, i) => {
+        const vals = rows.map(r => ({ r, v: r.v[i] })).filter(x => !isEmpty(x.v));
+        if (!vals.length) return null;
+        const nums = vals.map(x => numOf(x.v)).filter(x => x !== null);
+        const choice = c.y === 'نعم/لا' || /اختيار/.test(c.y);
+        const head = h('div', { class: 'qh' }, h('b', null, c.t), h('small', null, vals.length + ' إجابة'));
+        if (!choice && nums.length >= vals.length * 0.7 && !/تاريخ|وقت/.test(c.y)) {
+          const sum = nums.reduce((s, x) => s + x, 0), byDay = new Map();
+          vals.forEach(x => { const n = numOf(x.v); if (n !== null) { const k = x.r.date.slice(0, 10); byDay.set(k, (byDay.get(k) || 0) + n); } });
+          return h('div', { class: 'qs' }, head,
+            h('div', { class: 'stats' }, [['المجموع', sum], ['المتوسط', sum / nums.length], ['الأقل', Math.min(...nums)], ['الأعلى', Math.max(...nums)]]
+              .map(([k, v]) => h('span', null, h('small', null, k), h('b', null, NF.format(Math.round(v * 10) / 10))))),
+            Math.min(...nums) !== Math.max(...nums) ? dayBars(d.from, d.to, byDay) : null);
+        }
+        const distinct = new Set(vals.map(x => String(x.v).trim()));
+        if (choice || (distinct.size <= 6 && vals.length >= 4)) {
+          const items = countBy(vals, x => choice ? splitMulti(x.v) : String(x.v).trim());
+          const picked = st.pick && st.pick.sheet === f.sheet && st.pick.i === i ? st.pick.val : null;
+          return h('div', { class: 'qs' }, head, bars(items, vals.length, val => { st.pick = val ? { sheet: f.sheet, i, val, t: c.t } : null; redraw(); }, picked));
+        }
+        return h('div', { class: 'qs' }, head, moreList(vals.map(x => h('div', { class: 'quote' },
+          h('small', null, (x.r.emp || '—') + ' · ' + niceDay(x.r.date.slice(0, 10))), h('div', null, String(x.v)))), 3));
+      }).filter(Boolean);
+      const who = countBy(rows, r => r.emp || 'بدون اسم').map(([k, c]) => k + ' (' + c + ')').join('، ');
+      return h('details', { class: 'fcard', open: forms.length <= 2 || fi < 2 },
+        h('summary', null, h('span', { class: 'grow' }, h('b', null, f.form), h('small', null, who || '—')), h('span', { class: 'cnt' }, rows.length)),
+        f.total > f.rows.length ? h('p', { class: 'small muted' }, 'الملخص لآخر ' + f.rows.length + ' رد من ' + f.total + '. صغّر الفترة للباقي.') : null,
+        rows.length ? qs : h('p', { class: 'muted small' }, 'ما فيه ردود بهذا الفلتر'));
+    });
+
+    const list = forms.flatMap(f => f.rows.filter(r => pass(f, r)).map(r => ({ f, r }))).sort((a, b) => (a.r.date < b.r.date ? 1 : -1))
+      .map(({ f, r }) => answerRow(f.form + ' #' + r.ref, (r.emp || 'بدون اسم') + ' · ' + niceDay(r.date.slice(0, 10)) + ' ' + (parseStamp(r.date) ? ampm(parseStamp(r.date)) : ''),
+        f.cols.map((c, i) => [c.t, r.v[i]]), '#/rec/' + enc(f.sheet) + '/' + r.row + '/' + enc(r.ref)));
+
+    const chip = (label, on, fn) => h('button', { type: 'button', class: 'chip sm' + (on ? ' on' : ''), onclick: fn }, label);
+    const active = [st.emp ? 'الموظف: ' + st.emp : null, st.form ? 'النموذج: ' + (detail.find(f => f.sheet === st.form) || {}).form : null,
+      st.pick ? st.pick.t + ': ' + st.pick.val : null].filter(Boolean);
+
+    fill(body,
+      h('p', { class: 'small muted' }, 'من ' + d.from + ' إلى ' + d.to),
+      d.missing ? h('p', { class: 'small' }, h('b', null, 'ما سلّموا التقرير اليومي اليوم: '),
+        d.missing.team ? (d.missing.names.length ? h('span', { class: 'pill bad' }, d.missing.names.join('، ')) : h('span', { class: 'pill ok' }, 'الكل سلّم ✓'))
+          : h('span', { class: 'muted' }, 'حدّد إدارة كل موظف في ورقة القوائم عشان يطلع هنا')) : null,
+      h('div', { class: 'sec' }, h('h2', null, 'المؤشرات'), kpiGrid(d.kpis)),
+      d.extras.map(x => h('div', { class: 'sec' }, h('h2', null, x.title),
+        x.rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'tbl' }, x.head ? h('tr', null, x.head.map(t => h('th', null, t))) : null,
+          x.rows.map(r => h('tr', null, r.map(c => h('td', null, String(c)))))))
+          : h('p', { class: 'muted small' }, x.empty || '—'))),
+      h('div', { class: 'sec' }, h('h2', null, 'وش قالت التقارير'),
+        rowsAll.length ? [
+          h('div', { class: 'filters' },
+            h('div', { class: 'chips' }, chip('كل الموظفين', !st.emp, () => { st.emp = ''; redraw(); }),
+              emps.map(([k, c]) => chip(k + ' ' + c, st.emp === k, () => { st.emp = st.emp === k ? '' : k; redraw(); }))),
+            detail.length > 1 ? h('div', { class: 'chips' }, chip('كل النماذج', !st.form, () => { st.form = ''; st.pick = null; redraw(); }),
+              detail.map(f => chip(f.form + ' ' + f.total, st.form === f.sheet, () => { st.form = st.form === f.sheet ? '' : f.sheet; st.pick = null; redraw(); }))) : null,
+            active.length ? h('div', { class: 'activef' }, h('span', null, 'الفلتر: ' + active.join(' · ')),
+              h('button', { type: 'button', class: 'linkbtn', onclick: () => { st.emp = ''; st.form = ''; st.pick = null; redraw(); } }, 'إلغاء الفلتر')) : null),
+          summaries,
+          h('div', { class: 'sec' }, h('h2', null, 'الردود (' + list.length + ')'), h('p', { class: 'small muted' }, 'اضغط أي رد يفتح لك إجاباته هنا'),
+            list.length ? moreList(list, 30) : h('p', { class: 'muted small' }, 'ما فيه ردود بهذا الفلتر'))]
+          : h('div', { class: 'empty' }, 'ما فيه ردود في هذي الفترة')));
+  }
+
+  function renderNotes(body, d, st, key) {
+    const redraw = () => renderNotes(body, d, st, key);
+    const F = [['type', 'النوع'], ['product', 'المنتج'], ['dept', 'القسم المعني'], ['reason', 'سبب الإلغاء'], ['status', 'الحالة'], ['emp', 'الموظف']];
+    const val = (x, k) => k === 'emp' ? (x.emp || 'بدون اسم') : String(x.v[k] || '').trim();
+    const pass = x => F.every(([k]) => !st[k] || val(x, k) === st[k]);
+    const rows = d.notes.filter(pass);
+    const n = t => rows.filter(x => x.v.type === t).length;
+    const setStatus = async (x, status, btn) => {
+      btn.disabled = true;
+      try {
+        await api('update', { sheet: NOTES, row: x.row, ref: x.ref, fields: { status } });
+        [d.notes, d.open].forEach(arr => arr.forEach(y => { if (y.ref === x.ref && y.row === x.row) y.v.status = status; }));
+        const before = d.open.length;
+        d.open = d.open.filter(y => y.v.status === d.pendingStatus);
+        if (status === d.pendingStatus && !d.open.some(y => y.ref === x.ref && y.row === x.row)) {
+          d.open.push(x); d.open.sort((a, b) => (a.date < b.date ? -1 : 1));
+        }
+        d.openTotal += d.open.length - before;
+        if (key) dashCacheSet(key, d);
+        toast('تم: ' + status); redraw();
+      } catch (e) { toast(e.message, true); btn.disabled = false; }
+    };
+    const actions = x => isOwner() ? h('span', { class: 'row' }, NOTE_STATUS.filter(s => s !== x.v.status).map(s =>
+      h('button', { type: 'button', class: 'btn sm ' + (s === d.pendingStatus ? 'ghost' : 'light'), onclick: e => { e.preventDefault(); setStatus(x, s, e.currentTarget); } }, s))) : null;
+    const pillOf = s => h('span', { class: 'pill ' + (s === d.pendingStatus ? 'warn' : s ? 'ok' : '') }, s || 'بدون حالة');
+    const noteRow = x => answerRow((x.v.type || 'ملاحظة') + ' #' + x.ref + (x.v.product ? ' · ' + x.v.product : ''),
+      [x.emp || 'بدون اسم', niceDay(x.date.slice(0, 10)), x.v.status || ''].filter(Boolean).join(' · ') + (x.v.details ? ' — ' + x.v.details.slice(0, 70) : ''),
+      [['النوع', x.v.type], ['المنتج', x.v.product], ['رقم الطلب', x.v.order], ['رمز العميل', x.v.customer], ['القسم المعني', x.v.dept],
+        ['التفاصيل', x.v.details], ['سبب الإلغاء', x.v.reason], ['الحالة', x.v.status]],
+      '#/rec/' + enc(NOTES) + '/' + x.row + '/' + enc(x.ref), actions(x));
+    const byDay = new Map(); rows.forEach(x => { const k = x.date.slice(0, 10); byDay.set(k, (byDay.get(k) || 0) + 1); });
+    const active = F.filter(([k]) => st[k]).map(([k, t]) => t + ': ' + st[k]);
+    const dist = (k, t, src) => {
+      const items = countBy(src || rows, x => val(x, k));
+      return items.length ? h('div', { class: 'card dist' }, h('b', null, t), bars(items, (src || rows).length, v => { st[k] = v || ''; redraw(); }, st[k] || null, k === 'product' ? 10 : 8)) : null;
+    };
+    const openRows = d.open.filter(pass);
+    fill(body,
+      h('p', { class: 'small muted' }, 'من ' + d.from + ' إلى ' + d.to),
+      h('div', { class: 'kpis' }, [['كل الملاحظات', rows.length], ['شكاوى', n('شكوى')], ['طلبات ملغية', n(S.meta.notes.cancelType)], ['غير متوفر', n('غير متوفر')],
+        ['بانتظار متابعة (في الفترة)', rows.filter(x => x.v.status === d.pendingStatus).length], ['مفتوحة الآن (كل الأوقات)', d.openTotal]]
+        .map(([k, v], i) => h('div', { class: 'kpi' + (i === 5 && v ? ' alert' : '') }, h('div', { class: 'n' }, k), h('div', { class: 'v' }, NF.format(v))))),
+      active.length ? h('div', { class: 'activef' }, h('span', null, 'الفلتر: ' + active.join(' · ')),
+        h('button', { type: 'button', class: 'linkbtn', onclick: () => { F.forEach(([k]) => { st[k] = ''; }); redraw(); } }, 'إلغاء الفلتر')) : null,
+      h('div', { class: 'sec' }, h('h2', null, 'الملاحظات يوميًا'), rows.length ? h('div', { class: 'card' }, dayBars(d.from, d.to, byDay) || h('p', { class: 'muted small' }, rows.length + ' ملاحظة اليوم')) : null),
+      h('div', { class: 'sec' }, h('h2', null, 'التوزيع'), h('p', { class: 'small muted' }, 'اضغط أي شريط يفلتر الصفحة كلها'),
+        h('div', { class: 'dists' }, dist('type', 'النوع'), dist('product', 'المنتج'), dist('dept', 'القسم المعني'),
+          dist('reason', 'أسباب الإلغاء', rows.filter(x => x.v.type === S.meta.notes.cancelType)), dist('status', 'الحالة'), dist('emp', 'مين سجّل'))),
+      h('div', { class: 'sec' }, h('h2', null, 'المفتوحة: بانتظار متابعة (' + openRows.length + ')'),
+        h('p', { class: 'small muted' }, 'الأقدم أول. غيّر الحالة من هنا مباشرة.'),
+        openRows.length ? moreList(openRows.map(x => h('div', { class: 'openrow' },
+          h('div', { class: 'grow' }, h('b', null, (x.v.type || 'ملاحظة') + ' #' + x.ref + (x.v.product ? ' · ' + x.v.product : '')),
+            h('small', null, ago(x.date) + ' · ' + (x.emp || '—') + (x.v.dept ? ' · ' + x.v.dept : '')), x.v.details ? h('div', { class: 'det' }, x.v.details) : null),
+          actions(x))), 10) : h('p', { class: 'pill ok' }, 'ما فيه شي مفتوح ✓')),
+      h('div', { class: 'sec' }, h('h2', null, 'كل الملاحظات في الفترة (' + rows.length + ')'),
+        rows.length ? moreList(rows.map(noteRow), 30) : h('p', { class: 'muted small' }, 'ما فيه ملاحظات بهذا الفلتر')));
   }
 
   function lineChart(chart) {
