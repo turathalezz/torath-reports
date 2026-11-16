@@ -699,8 +699,9 @@
         if (!choice && nums.length >= vals.length * 0.7 && !/تاريخ|وقت/.test(c.y)) {
           const sum = nums.reduce((s, x) => s + x, 0), byDay = new Map();
           vals.forEach(x => { const n = numOf(x.v); if (n !== null) { const k = x.r.date.slice(0, 10); byDay.set(k, (byDay.get(k) || 0) + n); } });
+          if (nums.every(x => x === 0)) return h('div', { class: 'qs zero' }, head, h('span', { class: 'small muted' }, 'كل الإجابات صفر'));
           return h('div', { class: 'qs' }, head,
-            h('div', { class: 'stats' }, [['المجموع', sum], ['المتوسط', sum / nums.length], ['الأقل', Math.min(...nums)], ['الأعلى', Math.max(...nums)]]
+            h('div', { class: 'stats' }, [['آخر قيمة', numOf(vals[0].v)], ['المجموع', sum], ['المتوسط', sum / nums.length], ['الأعلى', Math.max(...nums)]]
               .map(([k, v]) => h('span', null, h('small', null, k), h('b', null, NF.format(Math.round(v * 10) / 10))))),
             Math.min(...nums) !== Math.max(...nums) ? dayBars(d.from, d.to, byDay) : null);
         }
