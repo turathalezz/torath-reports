@@ -195,6 +195,27 @@ details.ans[open]{padding-bottom:12px;border-color:var(--gold)}
 .openrow .det{font-size:13.5px;margin-top:4px;white-space:pre-wrap}
 @media (max-width:520px){.stats{grid-template-columns:repeat(2,1fr)}}
 
+/* الأهداف والمراجعة الأسبوعية */
+.weeknav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.wk{font-weight:600;color:var(--brand);margin:4px 0 10px}
+.card.goals h2{font-size:16px;color:var(--brand);margin-bottom:8px}
+.goal{border-top:1px solid var(--line);padding:10px 0;display:flex;flex-direction:column;gap:6px}
+.goal .gtext{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+.in.sm{min-height:36px;padding:6px 10px;font-size:13.5px}
+.carry{background:var(--warn-bg);border-radius:10px;padding:8px 10px;margin-bottom:8px;display:flex;flex-direction:column;gap:6px}
+.linkbtn.danger{color:var(--bad)}
+.card.goals form{margin-top:10px}
+.gcard{margin-top:8px}.gcard>b{color:var(--brand)}
+.gline{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line);font-size:14px}
+.gline:last-child{border-bottom:0}
+.gcard details summary{cursor:pointer;color:var(--mut);margin-top:6px}
+h3.sub{font-size:13.5px;color:var(--mut);margin:12px 0 6px}
+.ritem{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.ritem .rtext{font-weight:600;white-space:pre-wrap;font-size:14px}
+.ritem small{color:var(--mut);font-size:12px}
+@media (max-width:620px){.ritem>.row,.openrow>.row{width:100%}}
+@media print{.ritem,.gcard,details.fcard,details.dept{break-inside:avoid}textarea.in{border:0;min-height:0}}
+
 @media (min-width:760px){
   body{padding-bottom:0}
   .tabs{position:sticky;top:57px;bottom:auto;justify-content:center;gap:4px;border-top:0;border-bottom:1px solid var(--line);padding:6px}
