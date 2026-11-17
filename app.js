@@ -976,7 +976,7 @@
     };
     const draw = () => {
       show(h('a', { class: 'back', href: '#/' }, 'الرئيسية'),
-        h('div', { class: 'head' }, h('div', null, h('h1', null, 'أهداف الأسبوع'), h('p', null, 'من الأحد ' + d.from + ' إلى السبت ' + d.to))),
+        h('div', { class: 'head' }, h('div', null, h('h1', null, 'أهداف الأسبوع'), h('p', null, 'من الجمعة ' + d.from + ' إلى الخميس ' + d.to))),
         weekNav(d, '#/goals/'),
         h('p', { class: 'small muted' }, 'بداية الأسبوع اكتب أهداف إدارتك، ونهايته قيّم كل هدف. التقييم يطلع للمالك في المراجعة الأسبوعية.'),
         d.depts.map(dept => {
@@ -997,31 +997,71 @@
   }
 
   /* ---------- المراجعة الأسبوعية (للاجتماع) ---------- */
-  async function pageReview(week) {
+  const RV_PERIODS = [['أسبوع', 7], ['شهر', 30], ['٣ شهور', 90], ['٦ شهور', 180], ['٩ شهور', 270], ['سنة', 365], ['مخصص', 0]];
+  const fridayOf = d => addDays(d, -((d.getDay() + 2) % 7));
+  function reviewRange(p) {
+    const end = parseStamp(p.end) || new Date();
+    if (p.key === 'مخصص') { const a = p.from || dayKey(fridayOf(new Date())), b = p.to || dayKey(new Date()); return a <= b ? { from: a, to: b } : { from: b, to: a }; }
+    if (p.key === 'أسبوع') { const f = fridayOf(end); return { from: dayKey(f), to: dayKey(addDays(f, 6)) }; }
+    const n = (RV_PERIODS.find(x => x[0] === p.key) || RV_PERIODS[1])[1];
+    return { from: dayKey(addDays(end, -(n - 1))), to: dayKey(end) };
+  }
+  async function pageReview(arg) {
     setTab('dash');
     await getMeta();
     if (!isOwner()) return go('#/dash');
     const st = { dept: store.get('reviewDept') || '' };
-    const body = h('div', null, h('div', { class: 'loading' }, 'جاري تجميع الأسبوع…'));
+    const p = store.get('reviewPeriod') || { key: 'أسبوع' };
+    if (parseStamp(arg)) { p.key = 'أسبوع'; p.end = arg; }
+    const body = h('div', null, h('div', { class: 'loading' }, 'جاري التجميع…'));
     const live = h('span', { class: 'live' });
-    let d = null;
-    const key = 'rv_' + (week || 'now');
-    const draw = () => renderReview(body, d, st, () => { try { store.set(key, d); } catch (e) { /* */ } });
-    show(h('div', { class: 'head' }, h('div', null, h('h1', null, 'المراجعة الأسبوعية'), h('p', null, 'للاجتماع: الأهداف والمشاكل والاحتياجات والملاحظات')), live), body);
-    const cached = store.get(key);
-    if (cached) { d = cached; draw(); }
-    live.textContent = 'يتحدث…'; live.className = 'live on';
-    try {
-      const fresh = await api('review', week ? { week } : null);
-      if (!cached || JSON.stringify(cached) !== JSON.stringify(fresh)) { d = fresh; draw(); }
-      store.set(key, fresh); live.textContent = 'محدّث'; live.className = 'live';
-    } catch (e) {
-      if (cached) { live.textContent = 'ما قدرت أحدّث، هذي آخر نسخة'; live.className = 'live bad'; } else fill(body, errorBox(e));
-    }
+    const ctrl = h('div', { class: 'no-print' });
+    let seq = 0;
+    const save = () => store.set('reviewPeriod', p);
+    const shift = dir => {
+      const r = reviewRange(p), len = Math.round((parseStamp(r.to) - parseStamp(r.from)) / 86400000) + 1;
+      if (p.key === 'مخصص') { p.from = dayKey(addDays(parseStamp(r.from), dir * len)); p.to = dayKey(addDays(parseStamp(r.to), dir * len)); }
+      else p.end = dayKey(addDays(parseStamp(r.to), dir * len));
+      save(); drawCtrl(); load();
+    };
+    const drawCtrl = () => {
+      const r = reviewRange(p);
+      fill(ctrl,
+        h('div', { class: 'period' }, RV_PERIODS.map(([k]) => h('button', { type: 'button', class: 'chip' + (p.key === k ? ' on' : ''),
+          onclick: () => { if (k === 'مخصص' && p.key !== k) { p.from = r.from; p.to = r.to; } p.key = k; p.end = ''; save(); drawCtrl(); load(); } }, k))),
+        p.key === 'مخصص' ? h('div', { class: 'custom' },
+          h('input', { class: 'in', type: 'date', value: r.from, onchange: e => { p.from = e.target.value; save(); load(); } }),
+          h('input', { class: 'in', type: 'date', value: r.to, onchange: e => { p.to = e.target.value; save(); load(); } })) : null,
+        h('div', { class: 'weeknav' },
+          h('button', { type: 'button', class: 'btn ghost sm', onclick: () => shift(-1) }, '→ اللي قبل'),
+          h('button', { type: 'button', class: 'btn ghost sm', onclick: () => { p.end = ''; if (p.key === 'مخصص') p.key = 'أسبوع'; save(); drawCtrl(); load(); } }, 'الحالي'),
+          h('button', { type: 'button', class: 'btn ghost sm', onclick: () => shift(1) }, 'اللي بعد ←'),
+          h('button', { type: 'button', class: 'btn light sm', onclick: () => { document.querySelectorAll('details').forEach(x => { x.open = true; }); window.print(); } }, 'طباعة / PDF')));
+    };
+    const load = async () => {
+      const my = ++seq, r = reviewRange(p), key = 'rv_' + r.from + '_' + r.to, weekMode = p.key === 'أسبوع';
+      let d = store.get(key);
+      const draw = () => renderReview(body, d, st, () => { try { store.set(key, d); } catch (e) { /* */ } }, weekMode);
+      if (d) draw(); else fill(body, h('div', { class: 'loading' }, 'جاري التجميع…'));
+      live.textContent = 'يتحدث…'; live.className = 'live on';
+      try {
+        const fresh = await api('review', { from: r.from, to: r.to });
+        if (my !== seq) return;
+        if (!d || JSON.stringify(d) !== JSON.stringify(fresh)) { d = fresh; draw(); }
+        store.set(key, fresh); live.textContent = 'محدّث'; live.className = 'live';
+      } catch (e) {
+        if (my !== seq) return;
+        if (d) { live.textContent = 'ما قدرت أحدّث، هذي آخر نسخة'; live.className = 'live bad'; } else fill(body, errorBox(e));
+      }
+    };
+    show(h('div', { class: 'head' }, h('div', null, h('h1', null, 'المراجعة الأسبوعية'), h('p', null, 'للاجتماع: الأهداف والمشاكل والاحتياجات والملاحظات')), live), ctrl, body);
+    drawCtrl(); load();
   }
 
-  function renderReview(body, d, st, persist) {
-    const redraw = () => { persist(); renderReview(body, d, st, persist); };
+  function renderReview(body, d, st, persist, weekMode) {
+    const redraw = () => { persist(); renderReview(body, d, st, persist, weekMode); };
+    const T = weekMode ? 'الأسبوع' : 'الفترة';
+    const wkLabel = w => 'أسبوع ' + w.slice(8) + '/' + w.slice(5, 7);
     const okDept = dept => !st.dept || dept === st.dept;
     const okNote = x => !st.dept || String(x.v.dept || '').indexOf(shortDept(st.dept)) >= 0;
     const OPEN = 'مفتوحة', DONE = 'تمت المتابعة', CLOSED = 'مغلقة';
@@ -1062,7 +1102,7 @@
     const block = (title, grp, rowFn, okFn, empty) => {
       const w = grp.week.filter(okFn), o = grp.open.filter(okFn), dn = grp.done.filter(okFn);
       return h('div', { class: 'sec' }, h('h2', null, title),
-        h('h3', { class: 'sub' }, 'هذا الأسبوع (' + w.length + ')'), w.length ? moreList(w.map(rowFn), 15) : h('p', { class: 'muted small' }, empty),
+        h('h3', { class: 'sub' }, (weekMode ? 'هذا الأسبوع' : 'في الفترة') + ' (' + w.length + ')'), w.length ? moreList(w.map(rowFn), 15) : h('p', { class: 'muted small' }, empty),
         h('h3', { class: 'sub' }, 'مفتوحة من قبل، الأقدم أول (' + o.length + ')'), o.length ? moreList(o.map(rowFn), 10) : h('p', { class: 'muted small' }, 'ما فيه شي متأخر ✓'),
         dn.length ? h('details', { class: 'fcard' }, h('summary', null, h('span', { class: 'grow' }, h('b', null, 'تمت متابعتها (' + dn.length + ')'), h('small', null, 'تقدر ترجع أي وحدة مفتوحة'))), moreList(dn.map(rowFn), 10)) : null);
     };
@@ -1077,35 +1117,35 @@
       catch (ex) { toast(ex.message, true); } b.disabled = false;
     };
     const goalList = (arr, dept) => { const a = arr.filter(g => g.dept === dept); return a.length ? a.map(g => h('div', { class: 'gline' },
-      h('span', { class: 'grow' }, g.text, g.note ? h('small', { class: 'muted' }, ' — ' + g.note) : ''), g.rate ? h('span', { class: 'pill ' + RATE_CLASS[g.rate] }, g.rate) : h('span', { class: 'pill' }, 'ما تقيّم'))) : null; };
+      h('span', { class: 'grow' }, weekMode ? '' : h('small', { class: 'muted' }, wkLabel(g.week) + ': '), g.text, g.note ? h('small', { class: 'muted' }, ' — ' + g.note) : ''), g.rate ? h('span', { class: 'pill ' + RATE_CLASS[g.rate] }, g.rate) : h('span', { class: 'pill' }, 'ما تقيّم'))) : null; };
     fill(body,
-      h('div', { class: 'weeknav no-print' },
-        h('a', { class: 'btn ghost sm', href: '#/review/' + d.prev }, '→ اللي قبل'),
-        h('a', { class: 'btn ghost sm', href: '#/review' }, 'هذا الأسبوع'),
-        h('a', { class: 'btn ghost sm', href: '#/review/' + d.next }, 'اللي بعد ←'),
-        h('button', { class: 'btn light sm', onclick: () => { document.querySelectorAll('details').forEach(x => { x.open = true; }); window.print(); } }, 'طباعة / PDF')),
-      h('p', { class: 'wk' }, 'الأسبوع من الأحد ' + d.from + ' إلى السبت ' + d.to),
+      h('p', { class: 'wk' }, weekMode ? 'الأسبوع من الجمعة ' + d.from + ' إلى الخميس ' + d.to : 'الفترة من ' + d.from + ' إلى ' + d.to),
       h('div', { class: 'chips no-print', style: 'margin-bottom:12px' },
         [''].concat(d.depts).map(x => h('button', { type: 'button', class: 'chip sm' + (st.dept === x ? ' on' : ''), onclick: () => { st.dept = x; store.set('reviewDept', x); redraw(); } }, x ? shortDept(x) : 'كل الإدارات'))),
       h('div', { class: 'kpis' }, [['أهداف تحققت', gw.length ? gDone + ' من ' + gw.length : '—', gw.length && gDone < gw.length],
-        ['مشاكل الأسبوع', pw], ['مشاكل مفتوحة من قبل', po, po > 0], ['احتياجات الأسبوع', nw], ['احتياجات مفتوحة من قبل', no, no > 0],
-        ['ملاحظات وشكاوى الأسبوع', cw], ['ملاحظات مفتوحة من قبل', co, co > 0]]
+        ['مشاكل ' + T, pw], ['مشاكل مفتوحة من قبل', po, po > 0], ['احتياجات ' + T, nw], ['احتياجات مفتوحة من قبل', no, no > 0],
+        ['ملاحظات وشكاوى ' + T, cw], ['ملاحظات مفتوحة من قبل', co, co > 0]]
         .map(([k, v, alert]) => h('div', { class: 'kpi' + (alert ? ' alert' : '') }, h('div', { class: 'n' }, k), h('div', { class: 'v' }, typeof v === 'number' ? NF.format(v) : v)))),
-      h('div', { class: 'sec' }, h('h2', null, 'أهداف الأسبوع'),
+      h('div', { class: 'sec' }, h('h2', null, weekMode ? 'أهداف الأسبوع' : 'الأهداف في الفترة'),
         d.depts.filter(okDept).map(dept => h('div', { class: 'card gcard' }, h('b', null, shortDept(dept)),
-          goalList(d.goals.week, dept) || h('p', { class: 'muted small' }, 'ما انكتبت أهداف لهذا الأسبوع'),
-          goalList(d.goals.prevUnmet, dept) ? h('details', null, h('summary', { class: 'small' }, 'ما تحقق الأسبوع اللي قبل'), goalList(d.goals.prevUnmet, dept)) : null,
-          goalList(d.goals.next, dept) ? h('details', null, h('summary', { class: 'small' }, 'أهداف الأسبوع الجاي'), goalList(d.goals.next, dept)) : null)),
+          goalList(d.goals.week, dept) || h('p', { class: 'muted small' }, weekMode ? 'ما انكتبت أهداف لهذا الأسبوع' : 'ما انكتبت أهداف في الفترة'),
+          weekMode && goalList(d.goals.prevUnmet, dept) ? h('details', null, h('summary', { class: 'small' }, 'ما تحقق الأسبوع اللي قبل'), goalList(d.goals.prevUnmet, dept)) : null,
+          weekMode && goalList(d.goals.next, dept) ? h('details', null, h('summary', { class: 'small' }, 'أهداف الأسبوع الجاي'), goalList(d.goals.next, dept)) : null)),
         h('a', { class: 'btn ghost sm no-print', href: '#/goals/' + d.week, style: 'margin-top:8px' }, 'فتح صفحة الأهداف')),
       block('المشاكل (من خانة «المشاكل» في التقارير)', d.problems, x => itemRow(d.problems, x), x => okDept(x.dept), 'ما فيه مشاكل مسجلة هذا الأسبوع'),
       block('الاحتياجات (من خانة «وش أحتاج»)', d.needs, x => itemRow(d.needs, x), x => okDept(x.dept), 'ما فيه احتياجات مسجلة هذا الأسبوع'),
       block('الملاحظات والشكاوى', d.notes, noteRow, okNote, 'ما فيه ملاحظات هذا الأسبوع'),
-      h('div', { class: 'sec' }, h('h2', null, 'مؤشرات الأسبوع'),
+      h('div', { class: 'sec' }, h('h2', null, 'مؤشرات ' + T),
         d.kpis.filter(x => okDept(x.dept)).map(x => h('details', { class: 'dept', open: !!st.dept },
           h('summary', null, shortDept(x.dept), h('span', { class: 'small muted' }, ' ' + x.forms.reduce((s, f) => s + f.count, 0) + ' تقرير')),
           kpiGrid(x.kpis), x.forms.length ? h('p', { class: 'small muted' }, x.forms.map(f => f.form + ': ' + f.count + ' (' + f.who.join('، ') + ')').join(' · ')) : null))),
-      h('div', { class: 'sec' }, h('h2', null, 'محضر الاجتماع'), h('div', { class: 'card' }, minutes,
-        h('div', { class: 'row no-print', style: 'margin-top:8px' }, h('button', { class: 'btn sm', onclick: saveMin }, 'حفظ المحضر'), saved))));
+      weekMode ? h('div', { class: 'sec' }, h('h2', null, 'محضر الاجتماع'), h('div', { class: 'card' }, minutes,
+        h('div', { class: 'row no-print', style: 'margin-top:8px' }, h('button', { class: 'btn sm', onclick: saveMin }, 'حفظ المحضر'), saved)))
+        : h('div', { class: 'sec' }, h('h2', null, 'محاضر الاجتماعات في الفترة (' + (d.minutesList || []).length + ')'),
+          h('p', { class: 'small muted no-print' }, 'لكتابة محضر اختر «أسبوع».'),
+          (d.minutesList || []).length ? (d.minutesList || []).map(m => h('div', { class: 'card minute' }, h('b', null, wkLabel(m.week)),
+            h('div', { class: 'mtext' }, m.text), m.saved ? h('small', { class: 'muted' }, 'آخر حفظ ' + m.saved + (m.by ? ' · ' + m.by : '')) : null))
+            : h('p', { class: 'muted small' }, 'ما فيه محاضر محفوظة في الفترة')));
   }
 
   /* ================= التوجيه ================= */
